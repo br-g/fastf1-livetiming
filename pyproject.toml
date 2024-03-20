@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=40.8.0", "wheel>=0.42.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastf1_livetiming"
+version = "0.0.1"
+authors = [
+  { name="theOehrly" },
+  { name="Bruno Godefroy" },
+]
+description = "A slightly modified version of FastF1 livetiming module, for OpenF1"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
