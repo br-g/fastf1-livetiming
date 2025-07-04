@@ -1,5 +1,9 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
+import logging
+
+# Get a logger for this module
+logger = logging.getLogger(__name__)
 
 
 class Hub:
@@ -31,16 +35,17 @@ class HubClient(object):
         self.__handlers = {}
 
         async def handle(**data):
-            messages = data["M"] if "M" in data and len(data["M"]) > 0 else {}
+            messages = data.get("M", [])
             for inner_data in messages:
-                hub = inner_data["H"] if "H" in inner_data else ""
+                hub = inner_data.get("H", "")
                 if hub.lower() == self.name.lower():
-                    method = inner_data["M"]
-                    message = inner_data["A"]
+                    method = inner_data.get("M")
+                    message = inner_data.get("A")
 
-                    # This check prevents a KeyError on unknown methods
                     if method in self.__handlers:
                         await self.__handlers[method](message)
+                    else:
+                        logger.warning(f"No handler for method '{method}', ignoring.")
 
         connection.received += handle
 

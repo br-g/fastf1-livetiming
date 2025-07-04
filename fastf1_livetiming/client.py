@@ -44,6 +44,7 @@ class SignalRClient:
     """
 
     _connection_url = "https://livetiming.formula1.com/signalr"
+    # _connection_url = "http://localhost:8080/signalr"
 
     def __init__(
         self,
