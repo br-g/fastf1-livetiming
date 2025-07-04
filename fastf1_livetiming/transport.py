@@ -132,7 +132,7 @@ class Transport:
                     if isinstance(event, InvokeEvent):
                         await ws.send(dumps(event.message))
                     elif isinstance(event, CloseEvent) or self._should_close:
-                        break  # Exit producer loop on close event
+                        break
                 self.invoke_queue.task_done()
         except websockets.exceptions.ConnectionClosed:
             self.logger.info("Producer: Connection was closed.")

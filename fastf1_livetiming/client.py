@@ -144,7 +144,6 @@ class SignalRClient:
         """Monitors for data reception timeouts and stops the client."""
         self._t_last_message = time.time()
         while not self._exit_signal.is_set():
-            # Only check for timeouts if the connection is established
             if self._connection and self._connection.started:
                 if self.timeout > 0 and (
                     time.time() - self._t_last_message > self.timeout
@@ -153,9 +152,7 @@ class SignalRClient:
                         f"Timeout - No data received for over {self.timeout} "
                         f"seconds. Stopping client."
                     )
-                    # Set the event to signal the main loop to exit
                     self._exit_signal.set()
-                    # Exit the supervisor task
                     break
 
             await asyncio.sleep(5)
