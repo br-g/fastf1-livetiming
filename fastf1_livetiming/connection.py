@@ -19,7 +19,7 @@ class Connection(object):
         self.session = session
         self.received = EventHook()
         self.error = EventHook()
-        self.connected = EventHook()  # New hook for re-subscribing
+        self.connected = EventHook()
         self.__transport = Transport(self)
         self.started = False
         self.logger = logger or logging.getLogger(__name__)
@@ -34,7 +34,6 @@ class Connection(object):
 
     async def start(self, loop):
         """Starts the transport's persistent run loop."""
-        # This is now the entry point for the long-running task
         self.hub = list(self.__hubs.values())[0] if self.__hubs else None
         if not self.hub:
             raise RuntimeError(

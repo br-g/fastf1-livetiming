@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 import logging
 
-# Get a logger for this module
 logger = logging.getLogger(__name__)
 
 

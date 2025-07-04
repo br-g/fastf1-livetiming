@@ -158,7 +158,6 @@ class SignalRClient:
                     # Exit the supervisor task
                     break
 
-            # Check every second
             await asyncio.sleep(5)
 
     async def _async_start(self):

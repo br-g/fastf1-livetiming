@@ -4,14 +4,12 @@
 import asyncio
 import json
 import logging
-import random
 import time
 import uuid
 from argparse import ArgumentParser
 
 from aiohttp import web
 
-# --- Configuration ---
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s: %(message)s"
 )
@@ -19,7 +17,6 @@ logger = logging.getLogger("MockF1Server")
 ARGS = None
 
 
-# --- WebSocket Logic ---
 async def websocket_logic(ws: web.WebSocketResponse, request: web.Request):
     """
     Handles the logic for an individual WebSocket client, including
@@ -91,7 +88,6 @@ async def send_mock_feed(ws: web.WebSocketResponse, message_number, client_id):
     logger.info(f"Sent message {message_number} to client {client_id}")
 
 
-# --- HTTP Handlers ---
 async def handle_negotiate(request: web.Request):
     """Handles the SignalR negotiation HTTP request."""
     logger.info("Received /negotiate request.")
@@ -112,7 +108,6 @@ async def handle_websocket(request: web.Request):
     return ws
 
 
-# --- Main Application Setup ---
 if __name__ == "__main__":
     parser = ArgumentParser(description="Mock F1 Live Timing Server")
     parser.add_argument(
@@ -125,7 +120,6 @@ if __name__ == "__main__":
 
     app = web.Application()
     app.router.add_get("/signalr/negotiate", handle_negotiate)
-    # The /connect path is what the client will request for the WebSocket.
     app.router.add_get("/signalr/connect", handle_websocket)
 
     logger.info(f"Starting server in '{ARGS.mode}' mode.")
