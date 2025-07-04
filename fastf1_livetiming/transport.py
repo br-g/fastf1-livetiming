@@ -20,6 +20,7 @@ except ModuleNotFoundError:
     from json import dumps, loads
 
 import asyncio
+import logging
 
 import websockets
 
@@ -35,87 +36,105 @@ class Transport:
     def __init__(self, connection):
         self._connection = connection
         self._ws_params = None
-        self._conn_handler = None
-        self.ws_loop = None
-        self.invoke_queue = None
         self.ws = None
-        self._set_loop_and_queue()
+        self.invoke_queue = asyncio.Queue()
+        self._should_close = False
+        self._reconnect_delay = 5  # seconds
+        self.logger = logging.getLogger(__name__)
 
-    # ===================================
-    # Public Methods
+    async def run(self, loop):
+        """
+        The main connection loop that handles negotiation, connection,
+        and automatic reconnection.
+        """
+        self._should_close = False
+        while not self._should_close:
+            try:
+                # 1. Negotiate new parameters for each connection attempt
+                self._ws_params = WebSocketParameters(self._connection)
 
-    def start(self):
-        self._ws_params = WebSocketParameters(self._connection)
-        self._connect()
-        if not self.ws_loop.is_running():
-            self.ws_loop.run_forever()
+                # 2. Connect to the websocket with keepalive pings
+                self.logger.info(f"Connecting to {self._ws_params.socket_url}")
+                async with websockets.connect(
+                    self._ws_params.socket_url,
+                    extra_headers=self._ws_params.headers,
+                    loop=loop,
+                    ping_interval=20,
+                    ping_timeout=15,
+                ) as self.ws:
+                    self._connection.started = True
+                    self.logger.info("WebSocket connection established.")
+                    # Fire a "connected" event so the client can re-subscribe
+                    await self._connection.connected.fire()
+                    # 3. Run the message handlers
+                    await self._master_handler(self.ws, loop)
+
+            except (
+                websockets.exceptions.ConnectionClosed,
+                ConnectionRefusedError,
+                asyncio.TimeoutError,
+            ) as e:
+                self.logger.warning(
+                    f"Connection lost: {type(e).__name__}. Will reconnect."
+                )
+            except Exception:
+                self.logger.exception(
+                    "An unexpected error occurred in transport. Will reconnect."
+                )
+            finally:
+                self._connection.started = False
+                if not self._should_close:
+                    self.logger.info(
+                        f"Reconnecting in {self._reconnect_delay} seconds..."
+                    )
+                    await asyncio.sleep(self._reconnect_delay)
 
     def send(self, message):
-        asyncio.Task(self.invoke_queue.put(InvokeEvent(message)), loop=self.ws_loop)
+        """Put a message on the queue to be sent."""
+        self.invoke_queue.put_nowait(InvokeEvent(message))
 
     def close(self):
-        asyncio.Task(self.invoke_queue.put(CloseEvent()), loop=self.ws_loop)
+        """Signal the transport loop to close."""
+        self._should_close = True
+        # Put a CloseEvent to unblock the producer if it's waiting on the queue.
+        self.invoke_queue.put_nowait(CloseEvent())
 
-    # -----------------------------------
-    # Private Methods
-
-    def _set_loop_and_queue(self):
-        try:
-            self.ws_loop = asyncio.get_event_loop()
-        except RuntimeError:
-            self.ws_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.ws_loop)
-        self.invoke_queue = asyncio.Queue()
-
-    def _connect(self):
-        self._conn_handler = asyncio.ensure_future(
-            self._socket(self.ws_loop), loop=self.ws_loop
-        )
-
-    async def _socket(self, loop):
-        async with websockets.connect(
-            self._ws_params.socket_url, extra_headers=self._ws_params.headers, loop=loop
-        ) as self.ws:
-            self._connection.started = True
-            await self._master_handler(self.ws)
-
-    async def _master_handler(self, ws):
-        consumer_task = asyncio.ensure_future(
-            self._consumer_handler(ws), loop=self.ws_loop
-        )
-        producer_task = asyncio.ensure_future(
-            self._producer_handler(ws), loop=self.ws_loop
-        )
+    async def _master_handler(self, ws, loop):
+        """Runs consumer and producer tasks concurrently."""
+        consumer_task = loop.create_task(self._consumer_handler(ws))
+        producer_task = loop.create_task(self._producer_handler(ws))
         done, pending = await asyncio.wait(
-            [consumer_task, producer_task], return_when=asyncio.FIRST_EXCEPTION
+            [consumer_task, producer_task], return_when=asyncio.FIRST_COMPLETED
         )
 
         for task in pending:
             task.cancel()
 
     async def _consumer_handler(self, ws):
-        while True:
-            message = await ws.recv()
-            if len(message) > 0:
-                data = loads(message)
-                await self._connection.received.fire(**data)
+        """Handles receiving messages from the server."""
+        try:
+            while not self._should_close:
+                message = await ws.recv()
+                if len(message) > 0:
+                    data = loads(message)
+                    await self._connection.received.fire(**data)
+        except websockets.exceptions.ConnectionClosed:
+            self.logger.info("Consumer: Connection closed by server.")
+        finally:
+            return
 
     async def _producer_handler(self, ws):
-        while True:
-            try:
+        """Handles sending messages from the internal queue."""
+        try:
+            while not self._should_close:
                 event = await self.invoke_queue.get()
                 if event is not None:
-                    if event.type == "INVOKE":
+                    if isinstance(event, InvokeEvent):
                         await ws.send(dumps(event.message))
-                    elif event.type == "CLOSE":
-                        await ws.close()
-                        while ws.open is True:
-                            await asyncio.sleep(0.1)
-                        else:
-                            self._connection.started = False
-                            break
-                else:
-                    break
+                    elif isinstance(event, CloseEvent) or self._should_close:
+                        break  # Exit producer loop on close event
                 self.invoke_queue.task_done()
-            except Exception as e:
-                raise e
+        except websockets.exceptions.ConnectionClosed:
+            self.logger.info("Producer: Connection was closed.")
+        finally:
+            return

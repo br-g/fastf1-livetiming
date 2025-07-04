@@ -37,7 +37,10 @@ class HubClient(object):
                 if hub.lower() == self.name.lower():
                     method = inner_data["M"]
                     message = inner_data["A"]
-                    await self.__handlers[method](message)
+
+                    # This check prevents a KeyError on unknown methods
+                    if method in self.__handlers:
+                        await self.__handlers[method](message)
 
         connection.received += handle
 
