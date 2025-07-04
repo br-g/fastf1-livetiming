@@ -141,19 +141,24 @@ class SignalRClient:
         await self._connection.start(loop)
 
     async def _supervise(self):
-        """Monitors for data reception timeouts."""
+        """Monitors for data reception timeouts and stops the client."""
         self._t_last_message = time.time()
         while not self._exit_signal.is_set():
+            # Only check for timeouts if the connection is established
             if self._connection and self._connection.started:
                 if self.timeout > 0 and (
                     time.time() - self._t_last_message > self.timeout
                 ):
                     self.logger.warning(
-                        f"No new data for over {self.timeout} seconds. "
-                        "Feed may be silent. Client remains active."
+                        f"Timeout - No data received for over {self.timeout} "
+                        f"seconds. Stopping client."
                     )
-                    # Reset timer to prevent log spam
-                    self._t_last_message = time.time()
+                    # Set the event to signal the main loop to exit
+                    self._exit_signal.set()
+                    # Exit the supervisor task
+                    break
+
+            # Check every second
             await asyncio.sleep(5)
 
     async def _async_start(self):
