@@ -11,7 +11,7 @@ class WebSocketParameters:
     def __init__(self, connection):
         self.protocol_version = "1.5"
         self.raw_url = self._clean_url(connection.url)
-        self.conn_data = self._get_conn_data(connection.hub)
+        self.conn_data = self._get_conn_data(connection.hub.name)
         self.session = connection.session
         self.headers = None
         self.socket_conf = None
