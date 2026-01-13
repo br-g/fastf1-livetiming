@@ -45,9 +45,14 @@ class WebSocketParameters:
         )
         url = self._format_url(self.raw_url, "negotiate", query)
         self.headers = dict(self.session.headers)
+
         request = self.session.get(url)
         self.headers["Cookie"] = self._get_cookie_str(request.cookies)
         self.socket_conf = request.json()
+
+        print(url)
+        print(self.headers)
+        print(self.socket_conf)
 
     @staticmethod
     def _get_cookie_str(request):
