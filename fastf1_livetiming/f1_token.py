@@ -4,9 +4,9 @@ This module provides a single function to log in to F1 TV and retrieve
 the subscription token needed for API access.
 
 Acknowledgments:
-    Thank you to @eepzii for his work on the Paddock project
-    (https://github.com/eepzii/paddock), which provided inspiration
-    for this implementation.
+    A massive shoutout to @eepzii for his great work on the Paddock project
+    (https://github.com/eepzii/paddock). It was a primary source of inspiration for this
+    implementation.
 
 Environment Variables:
     F1_EMAIL: F1 TV account email
@@ -26,7 +26,6 @@ import os
 from loguru import logger
 from playwright.async_api import Page, async_playwright
 
-# F1 TV URLs and selectors
 LOGIN_URL = "https://account.formula1.com/#/en/login?redirect=https%3A%2F%2Fwww.formula1.com%2Fen&lead_source=web_f1core"
 API_URL = "https://api.formula1.com/v2/account/subscriber/authenticate/by-password"
 
@@ -50,7 +49,7 @@ async def _handle_consent(page: Page) -> None:
                 )
             except Exception:
                 logger.error("  No consent banner found")
-                return  # No consent banner
+                return
 
         logger.info("  Consent banner found, clicking accept...")
         iframe_locator = page.frame_locator(COOKIE_IFRAME)
@@ -247,8 +246,8 @@ if __name__ == "__main__":
 
     try:
         token = get_token(headless=False)
-        logger.info("\nToken:")
-        logger.info(token)
+        print("\nToken:")
+        print(token)
         sys.exit(0)
     except Exception as e:
         logger.info(f"\n✗ Error: {e}", file=sys.stderr)
