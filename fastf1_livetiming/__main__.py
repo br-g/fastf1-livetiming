@@ -7,7 +7,7 @@ from fastf1_livetiming.client import SignalRClient, messages_from_raw
 def save(args):
     mode = "a" if args.append else "w"
     client = SignalRClient(
-        args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout
+        args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout, auth=args.auth
     )
     client.start()
 
@@ -58,6 +58,12 @@ rec_parser.add_argument(
     default=60,
     help="Timeout in seconds after which the client will "
     "automatically exit if no data is received.",
+)
+rec_parser.add_argument(
+    "--auth",
+    action="store_true",
+    default=False,
+    help="Enable authentication using F1 TV credentials.",
 )
 rec_parser.set_defaults(func=save)
 

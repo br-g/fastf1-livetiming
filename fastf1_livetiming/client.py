@@ -8,6 +8,7 @@ from typing import Iterable, List
 import requests
 
 from fastf1_livetiming.connection import Connection
+from fastf1_livetiming.f1_token import get_token
 
 
 def messages_from_raw(r: Iterable):
@@ -53,21 +54,10 @@ class SignalRClient:
         filemode: str = "w",
         debug: bool = False,
         timeout: int = 60,
+        auth: bool = False,
         logger=None,
     ):
-        self.headers = {
-            "User-agent": "BestHTTP",
-            "Accept-Encoding": "gzip, identity",
-            "Connection": "keep-alive, Upgrade",
-        }
-
-        self.topics = topics
-        self.debug = debug
-        self.filename = filename
-        self.filemode = filemode
-        self.timeout = timeout
-        self._connection = None
-
+        # Initialize logger first
         if not logger:
             logging.basicConfig(
                 level=logging.INFO,
@@ -76,6 +66,34 @@ class SignalRClient:
             self.logger = logging.getLogger("SignalRClient")
         else:
             self.logger = logger
+
+        self.headers = {
+            "User-agent": "BestHTTP",
+            "Accept-Encoding": "gzip, identity",
+            "Connection": "keep-alive, Upgrade",
+        }
+
+        # Add authentication token if auth is enabled
+        if auth:
+            self.logger.info("Authentication enabled. Retrieving token...")
+            try:
+                token = get_token()
+                self.headers["Authorization"] = f"Bearer {token}"
+                self.logger.info("Token retrieved successfully.")
+            except ValueError as e:
+                self.logger.error(f"Authentication failed: {e}")
+                self.logger.error("Please ensure F1_EMAIL and F1_PASSWORD environment variables are set correctly.")
+                self.logger.warning("Continuing without authentication...")
+            except Exception as e:
+                self.logger.error(f"Failed to retrieve authentication token: {e}")
+                self.logger.warning("Continuing without authentication...")
+
+        self.topics = topics
+        self.debug = debug
+        self.filename = filename
+        self.filemode = filemode
+        self.timeout = timeout
+        self._connection = None
 
         self._output_file = None
         self._t_last_message = None
