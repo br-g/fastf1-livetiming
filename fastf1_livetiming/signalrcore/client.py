@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import time
 from typing import List, Optional
 
@@ -9,41 +10,14 @@ from signalrcore.messages.completion_message import CompletionMessage
 
 from fastf1_livetiming.signalrcore.f1_token import get_token
 
+# Suppress noisy libraries
+logging.getLogger("websocket").setLevel(logging.CRITICAL)
+logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+
 
 class SignalRCoreClient:
-    # legacy naming, this is now a SignalR Core client
-    """A client for receiving and saving F1 timing data which is streamed
-    live over the SignalR protocol.
-
-    During an F1 session, timing data and telemetry data are streamed live
-    using the SignalR protocol. This class can be used to connect to the
-    stream and save the received data into a file.
-
-    The data will be saved in a raw text format without any postprocessing.
-
-    Args:
-        filename: filename (opt. with path) for the output file
-        filemode: one of 'w' or 'a'; append to or overwrite
-            file content it the file already exists. Append-mode may be useful
-            if the client is restarted during a session.
-        debug: When set to true, the complete SignalR
-            message is saved. By default, only the actual data from a
-            message is saved.
-        timeout: Number of seconds after which the client
-            will automatically exit when no message data is received.
-            Set to zero to disable.
-        logger: By default, errors are logged to the console. If you wish to
-            customize logging, you can pass an instance of
-            :class:`logging.Logger` (see: :mod:`logging`).
-        no_auth: If set to true, the client will attempt to connect without
-            authentication. This may only work for some sessions or may only
-            return empty or partial data.
-    """
-    _connection_url = "wss://livetiming.formula1.com/signalrcore"
-    _negotiate_url = "https://livetiming.formula1.com/signalrcore/negotiate"
-
-    # _connection_url = "http://localhost:8080/signalrcore"
-    # _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
+    _connection_url = "http://localhost:8080/signalrcore"
+    _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
 
     def __init__(
         self,
@@ -55,22 +29,23 @@ class SignalRCoreClient:
         logger: Optional = None,
         no_auth: bool = False,
     ):
-
         if debug:
             raise ValueError("Debug mode is no longer supported.")
 
         self.headers = {}
-
         self.topics = topics
-
         self.filename = filename
         self.filemode = filemode
         self.timeout = timeout
-
         self._no_auth = no_auth
 
+        # State flags
         self._connection = None
         self._is_connected = False
+        self._manually_closed = False
+        self._reconnecting = False  # <--- NEW: Prevents duplicate threads
+
+        self._token = None
 
         if not logger:
             logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s")
@@ -90,12 +65,9 @@ class SignalRCoreClient:
             for key in msg.result.keys():
                 data.append([key, json.dumps(msg.result[key]), ""])
             formatted = "\n".join(map(str, data))
-
         elif isinstance(msg, list):
             formatted = str(msg)
-
         else:
-            self.logger.error(f"Unknown message type: {type(msg)}")
             return
 
         try:
@@ -106,40 +78,68 @@ class SignalRCoreClient:
 
     def _on_connect(self):
         self._is_connected = True
+        self._reconnecting = False  # Reset flag on successful connect
         self.logger.info("Connection established")
+        self._send_subscribe()
 
     def _on_close(self):
         self._is_connected = False
         self.logger.info("Connection closed")
 
-    def _run(self):
-        self._output_file = open(self.filename, self.filemode)
+        if not self._manually_closed:
+            # CHECK: If we are already reconnecting, don't spawn another thread
+            if self._reconnecting:
+                return
 
-        # Pre-negotiate to the get a valid AWSALBCORS header token
-        r = requests.options(self._negotiate_url, headers=self.headers)
-        self.headers.update({"Cookie": f"AWSALBCORS={r.cookies['AWSALBCORS']}"})
+            self._reconnecting = True
+            self.logger.warning("Unexpected disconnect! Starting reconnection loop...")
+            threading.Thread(target=self._reconnect_loop, daemon=True).start()
 
-        token = get_token()
+    def _reconnect_loop(self):
+        """Retries connection every 5s."""
+        while not self._is_connected and not self._manually_closed:
+            self.logger.info("Retrying connection in 5 seconds...")
+            time.sleep(5)
 
-        # Configure and create connection
+            try:
+                self._configure_connection()
+                self._connection.start()
+                return  # Success (flag reset in _on_connect)
+            except Exception as e:
+                # Use debug to hide stack trace unless needed
+                self.logger.debug(f"Detailed error: {e}")
+                self.logger.error(f"Reconnection failed: Server not reachable.")
+
+    def _send_subscribe(self):
+        try:
+            time.sleep(0.5)
+            self._connection.send(
+                "Subscribe", [self.topics], on_invocation=self._on_message
+            )
+            self.logger.info(f"Subscribed to topics: {self.topics}")
+        except Exception as e:
+            self.logger.error(f"Failed to subscribe: {e}")
+
+    def _configure_connection(self):
+        try:
+            r = requests.options(self._negotiate_url, headers=self.headers, timeout=5)
+            self.headers.update(
+                {"Cookie": f"AWSALBCORS={r.cookies.get('AWSALBCORS', '')}"}
+            )
+        except Exception:
+            pass
+
         options = {
             "verify_ssl": True,
-            "access_token_factory": lambda: token,
+            "access_token_factory": lambda: self._token if self._token else "",
             "headers": self.headers,
         }
 
+        # Use logging.CRITICAL to silence library noise
         self._connection = (
             HubConnectionBuilder()
             .with_url(self._connection_url, options=options)
-            .configure_logging(logging.INFO)
-            .with_automatic_reconnect(
-                {
-                    "type": "raw",
-                    "keep_alive_interval": 10,
-                    "reconnect_interval": 5,
-                    "max_attempts": 1000,
-                }
-            )
+            .configure_logging(logging.CRITICAL)
             .build()
         )
 
@@ -147,38 +147,56 @@ class SignalRCoreClient:
         self._connection.on_close(self._on_close)
         self._connection.on("feed", self._on_message)
 
-        self._connection.start()
+    def _run(self):
+        self._output_file = open(self.filename, self.filemode)
 
-        # wait for connection to be established
-        while not self._is_connected:
-            time.sleep(0.1)
+        if not self._no_auth:
+            self.logger.info("Fetching authentication token...")
+            self._token = get_token()
 
-        self._connection.send(
-            "Subscribe", [self.topics], on_invocation=self._on_message
-        )
+        try:
+            self._configure_connection()
+            self._connection.start()
+
+            start_time = time.time()
+            while not self._is_connected:
+                if time.time() - start_time > 10:
+                    raise TimeoutError("Could not connect initially")
+                time.sleep(0.1)
+
+        except Exception as e:
+            self.logger.error(f"Initial connection failed: {e}")
+            if not self._manually_closed and not self._reconnecting:
+                self._reconnecting = True
+                threading.Thread(target=self._reconnect_loop, daemon=True).start()
 
     def _supervise(self):
-        # check if data is still being received and exit if not
         self._t_last_message = time.time()
         while True:
-            if self.timeout != 0 and time.time() - self._t_last_message > self.timeout:
-
-                self.logger.warning(
-                    f"Timeout - received no data for more "
-                    f"than {self.timeout} seconds!"
-                )
-
-                self._exit()
+            if self._manually_closed:
                 return
+
+            if self.timeout != 0 and self._is_connected:
+                if time.time() - self._t_last_message > self.timeout:
+                    self.logger.warning(
+                        f"Timeout - received no data for {self.timeout}s!"
+                    )
+                    self._exit()
+                    return
 
             time.sleep(1)
 
     def _exit(self):
-        self._connection.stop()
-        self._output_file.close()
+        self._manually_closed = True
+        if self._connection:
+            try:
+                self._connection.stop()
+            except Exception:
+                pass
+        if self._output_file:
+            self._output_file.close()
 
     def start(self):
-        """Connect to the data stream and start writing the data to a file."""
         self._run()
         try:
             self._supervise()
@@ -187,10 +205,4 @@ class SignalRCoreClient:
             self._exit()
 
     async def async_start(self):
-        """
-        :meta private:
-        """
-        raise NotImplementedError(
-            "This method is no longer provided because the SignalR client no "
-            "longer uses asyncio! Please use `.start` instead."
-        )
+        raise NotImplementedError("Use .start() instead.")

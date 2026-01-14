@@ -41,6 +41,7 @@ class ChaosState:
 
 
 chaos = ChaosState()
+message_count = 0
 
 
 # --- Helper: SignalR Message Formatter ---
@@ -161,10 +162,14 @@ async def signalr_endpoint(websocket: WebSocket):
                 # This matches the signature expected by: self._connection.on("feed", self._on_message)
 
                 # Mock Data Payload
+                global message_count
                 mock_data = {
-                    "TimingData": {"Lines": {"33": {"GapToLeader": "0.0"}}},
-                    "DriverList": {"33": {"Tla": "VER"}},
+                    "TimingData": {
+                        "Lines": {str(message_count): {"GapToLeader": "0.0"}}
+                    },
+                    "DriverList": {str(message_count): {"Tla": "VER"}},
                 }
+                message_count += 1
 
                 # Type 1 = Invocation (Server calling Client method 'feed')
                 feed_msg = {"type": 1, "target": "feed", "arguments": [mock_data]}

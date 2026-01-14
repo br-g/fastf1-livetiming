@@ -119,8 +119,8 @@ if __name__ == "__main__":
     ARGS = parser.parse_args()
 
     app = web.Application()
-    app.router.add_get("/signalrcore/negotiate", handle_negotiate)
-    app.router.add_get("/signalrcore/connect", handle_websocket)
+    app.router.add_get("/signalr/negotiate", handle_negotiate)
+    app.router.add_get("/signalr/connect", handle_websocket)
 
     logger.info(f"Starting server in '{ARGS.mode}' mode.")
     logger.info("Server will be available at http://localhost:8080")
