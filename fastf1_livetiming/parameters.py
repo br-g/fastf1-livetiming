@@ -50,10 +50,6 @@ class WebSocketParameters:
         self.headers["Cookie"] = self._get_cookie_str(request.cookies)
         self.socket_conf = request.json()
 
-        print(url)
-        print(self.headers)
-        print(self.socket_conf)
-
     @staticmethod
     def _get_cookie_str(request):
         return "; ".join(["%s=%s" % (name, value) for name, value in request.items()])
