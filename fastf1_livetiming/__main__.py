@@ -1,15 +1,38 @@
 import argparse
+import logging
 import sys
 
-from fastf1_livetiming.client import SignalRClient, messages_from_raw
+from fastf1_livetiming.signalr.client import SignalRClient
+from fastf1_livetiming.signalrcore.client import SignalRCoreClient
+from fastf1_livetiming.util import messages_from_raw
+
+# Configure logging
+logging.basicConfig(format="%(asctime)s - %(levelname)s: %(message)s")
+logger = logging.getLogger("fastf1_livetiming")
+logger.setLevel(logging.INFO)
 
 
 def save(args):
     mode = "a" if args.append else "w"
-    client = SignalRClient(
-        args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout
-    )
-    client.start()
+    if args.auth:
+        try:
+            logger.info("Attempting to connect with authentication...")
+            client = SignalRCoreClient(
+                args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout
+            )
+            client.start()
+        except Exception as e:
+            logger.error(f"Authentication failed: {e}")
+            logger.info("Falling back to SignalRClient without authentication...")
+            client = SignalRClient(
+                args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout
+            )
+            client.start()
+    else:
+        client = SignalRClient(
+            args.file, args.topics, filemode=mode, debug=args.debug, timeout=args.timeout
+        )
+        client.start()
 
 
 def convert(args):
@@ -59,6 +82,7 @@ rec_parser.add_argument(
     help="Timeout in seconds after which the client will "
     "automatically exit if no data is received.",
 )
+rec_parser.add_argument("--auth", action="store_true", default=False, help="Use SignalRCoreClient with authentication support instead of SignalRClient.")
 rec_parser.set_defaults(func=save)
 
 conv_parser.add_argument("input", type=str, help="Input file name")

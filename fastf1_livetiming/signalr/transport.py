@@ -9,8 +9,8 @@ except NameError:
 
 # -----------------------------------
 # Internal Imports
-from fastf1_livetiming.parameters import WebSocketParameters
-from fastf1_livetiming.queue_events import CloseEvent, InvokeEvent
+from fastf1_livetiming.signalr.parameters import WebSocketParameters
+from fastf1_livetiming.signalr.queue_events import CloseEvent, InvokeEvent
 
 # -----------------------------------
 # External Imports

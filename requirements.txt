@@ -1,2 +1,4 @@
 loguru>=0.7.2
+playwright>=1.57,<1.58
+signalrcore==0.9.5
 websockets==12.0

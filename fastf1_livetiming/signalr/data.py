@@ -8,7 +8,7 @@ from datetime import timedelta
 
 from loguru import logger as _logger
 
-from fastf1_livetiming.utils import recursive_dict_get, to_datetime
+from fastf1_livetiming.signalr.utils import recursive_dict_get, to_datetime
 
 _track_status_mapping = {
     "AllClear": "1",
