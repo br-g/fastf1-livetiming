@@ -1,4 +1,4 @@
-"""Simple F1 TV login to retrieve subscription token.
+"""Simple F1 login to retrieve subscription token.
 
 This module provides a single function to log in to F1 TV and retrieve
 the subscription token needed for API access.
@@ -22,63 +22,116 @@ Example:
 import asyncio
 import json
 import os
+import re
 
 from loguru import logger
-from playwright.async_api import Page, async_playwright
+from playwright.async_api import Page, Route
+from playwright.async_api import TimeoutError as PlaywrightTimeout
+from playwright.async_api import async_playwright
 
 LOGIN_URL = "https://account.formula1.com/#/en/login?redirect=https%3A%2F%2Fwww.formula1.com%2Fen&lead_source=web_f1core"
-API_URL = "https://api.formula1.com/v2/account/subscriber/authenticate/by-password"
+API_PATTERN = re.compile(r".*/account/subscriber/authenticate/by-password")
 
-COOKIE_IFRAME = "iframe[src*='consent.formula1.com']"
-COOKIE_BUTTON = '//*[@id="notice"]/div[3]/button[1]'
+# Retry Settings
+MAX_RETRIES = 5
+BASE_DELAY = 5
 
-EMAIL_INPUT = "#loginform > div:nth-child(2) > input"
-PASSWORD_INPUT = "#loginform > div.field.password > input"
-SUBMIT_BTN = "#loginform > div.actions > button"
+
+class AuthError(Exception):
+    """Raised when authentication fails definitively (401/403)."""
+
+    pass
+
+
+class LoginRetryError(Exception):
+    """Raised when login fails after multiple retries."""
+
+    pass
 
 
 async def _handle_consent(page: Page) -> None:
-    """Handle GDPR consent banner if present."""
     try:
-        logger.info("  Checking for GDPR consent banner...")
-        iframe_selector = await page.query_selector(COOKIE_IFRAME)
-        if not iframe_selector:
-            try:
-                await page.wait_for_selector(
-                    COOKIE_IFRAME, timeout=30000, state="visible"
-                )
-            except Exception:
-                logger.error("  No consent banner found")
-                return
+        iframe_selector = (
+            "iframe[src*='consent.formula1.com'], iframe[title*='Consent']"
+        )
 
-        logger.info("  Consent banner found, clicking accept...")
-        iframe_locator = page.frame_locator(COOKIE_IFRAME)
-        button = iframe_locator.locator(COOKIE_BUTTON)
-        await button.click(timeout=30000)
-
-        # Wait for iframe to disappear or timeout (shorter timeout)
         try:
-            await page.wait_for_selector(COOKIE_IFRAME, state="hidden", timeout=30000)
-            logger.info("  Consent accepted")
+            await page.wait_for_selector(
+                iframe_selector, timeout=30000, state="visible"
+            )
+        except PlaywrightTimeout:
+            return
+
+        logger.info("  Consent banner found. Attempting to accept...")
+
+        try:
+            frame = page.frame_locator(iframe_selector).first
+            accept_btn = frame.get_by_role(
+                "button", name=re.compile(r"(ACCEPT|AGREE|YES)", re.IGNORECASE)
+            ).first
+            if await accept_btn.is_visible():
+                await accept_btn.click()
+                await asyncio.sleep(1)
         except Exception:
-            logger.error("  Consent clicked (banner still visible)")
-            pass  # Continue even if it doesn't disappear
+            pass
 
-        await asyncio.sleep(2)
+        try:
+            await page.evaluate(
+                f"""
+                const iframes = document.querySelectorAll("{iframe_selector}");
+                iframes.forEach(iframe => {{
+                    const container = iframe.closest('div[id^="sp_message_container"]');
+                    if (container) container.remove();
+                    else iframe.remove();
+                }});
+            """
+            )
+            logger.info("  Consent banner cleanup done.")
+        except Exception as e:
+            # Ignore "context destroyed" errors caused by successful navigation
+            if "Execution context was destroyed" not in str(e):
+                logger.warning(f"  Consent cleanup error: {e}")
 
+    except Exception as e:
+        logger.warning(f"  Consent handling warning: {e}")
+
+
+async def _intercept_token(route: Route, token_future: asyncio.Future) -> None:
+    try:
+        response = await route.fetch()
+        status = response.status
+
+        if status == 200:
+            try:
+                body = await response.json()
+                data = body.get("data", {})
+                token = data.get("subscriptionToken") or data.get("subscription_token")
+
+                if token and not token_future.done():
+                    token_future.set_result(token)
+            except json.JSONDecodeError:
+                pass
+        elif status == 403:
+            if not token_future.done():
+                token_future.set_exception(AuthError("403 Forbidden - Bot detected"))
+        elif status == 401:
+            if not token_future.done():
+                token_future.set_exception(
+                    AuthError("401 Unauthorized - Check Password")
+                )
+
+        await route.fulfill(response=response)
     except Exception:
-        # Consent handling is optional, continue if it fails
-        logger.error("  Consent handling failed, continuing...")
-        pass
+        try:
+            await route.continue_()
+        except:
+            pass
 
 
-async def _login(email: str, password: str, headless: bool = True) -> str:
-    """Internal async function to perform F1 TV login."""
-    logger.info("Starting F1 TV login...")
-    logger.info(f"Mode: {'headless' if headless else 'visible browser'}")
+async def _login_attempt(email: str, password: str, headless: bool) -> str:
+    logger.info(f"Launching browser (Headless: {headless})...")
 
     async with async_playwright() as p:
-        logger.info("Launching browser...")
         browser = await p.chromium.launch(
             headless=headless,
             args=[
@@ -92,163 +145,104 @@ async def _login(email: str, password: str, headless: bool = True) -> str:
 
         context = await browser.new_context()
         page = await context.new_page()
+
         await page.add_init_script(
-            """
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            window.chrome = { runtime: {} };
-        """
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
 
         try:
-            logger.info("Navigating to F1 login page...")
+            token_future = asyncio.Future()
+            await page.route(
+                API_PATTERN, lambda route: _intercept_token(route, token_future)
+            )
+
+            logger.info("  Navigating to F1 login...")
             await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000)
 
             await _handle_consent(page)
 
-            logger.info("Waiting for login form...")
-            await page.wait_for_selector(EMAIL_INPUT, state="visible", timeout=30000)
-            await page.wait_for_selector(PASSWORD_INPUT, state="visible", timeout=30000)
-            await page.wait_for_selector(SUBMIT_BTN, state="visible", timeout=30000)
+            logger.info("  Waiting for login form...")
+            email_input = page.locator("input[name='Login'], input[type='email']").first
+            pass_input = page.locator(
+                "input[name='Password'], input[type='password']"
+            ).first
+            submit_btn = page.locator(
+                "button[type='submit'], button:has-text('Sign In')"
+            ).first
 
-            logger.info("Filling credentials...")
-            await page.fill(EMAIL_INPUT, email)
+            await email_input.wait_for(state="visible", timeout=60000)
+
+            logger.info("  Filling credentials...")
+            await email_input.fill(email)
             await asyncio.sleep(0.3)
-            await page.fill(PASSWORD_INPUT, password)
+
+            await pass_input.fill(password)
             await asyncio.sleep(0.5)
 
-            token_future = asyncio.Future()
-            api_called = asyncio.Event()
-
-            async def handle_route(route):
-                try:
-                    api_called.set()
-                    response = await route.fetch()
-                    status = response.status
-
-                    if status == 200:
-                        body = await response.body()
-                        data = json.loads(body.decode("utf-8"))
-                        # Try both camelCase and snake_case
-                        token = data.get("data", {}).get(
-                            "subscriptionToken"
-                        ) or data.get("data", {}).get("subscription_token")
-                        if token and not token_future.done():
-                            token_future.set_result(token)
-                        elif not token_future.done():
-                            token_future.set_exception(
-                                RuntimeError(
-                                    f"200 OK but no token in response. Data: {data}"
-                                )
-                            )
-                    elif status == 401:
-                        if not token_future.done():
-                            token_future.set_exception(
-                                ValueError("Invalid email or password (401)")
-                            )
-                    elif status == 403:
-                        if not token_future.done():
-                            token_future.set_exception(
-                                ValueError("Account forbidden or bot detected (403)")
-                            )
-                    else:
-                        try:
-                            body = await response.body()
-                            body_text = body.decode("utf-8")
-                        except Exception:
-                            body_text = "Could not read response body"
-
-                        if not token_future.done():
-                            token_future.set_exception(
-                                RuntimeError(
-                                    f"Login failed with status {status}. Body: {body_text[:200]}"
-                                )
-                            )
-
-                    await route.fulfill(response=response)
-
-                except Exception as e:
-                    if not token_future.done():
-                        token_future.set_exception(
-                            RuntimeError(f"Route handler error: {e}")
-                        )
-                    try:
-                        await route.continue_()
-                    except Exception:
-                        pass
-
-            # Intercept login API call
-            await page.route(f"**{API_URL}**", handle_route)
-
-            logger.info("Submitting login form...")
+            logger.info("  Clicking submit...")
             try:
-                await page.click(SUBMIT_BTN, timeout=30000)
+                await submit_btn.click(timeout=30000)
             except Exception:
-                logger.info("  Retrying click with force...")
-                await page.click(SUBMIT_BTN, force=True, timeout=30000)
-
-            logger.info("Waiting for login API response...")
-            try:
-                await asyncio.wait_for(api_called.wait(), timeout=30.0)
-                logger.info("  Login API called")
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    "Login form submitted but no API call detected - "
-                    "possible bot detection or form submission failure"
+                logger.info(
+                    "  Standard click blocked/failed, retrying with Force Click..."
                 )
+                await submit_btn.click(force=True, timeout=30000)
 
-            try:
-                token = await asyncio.wait_for(token_future, timeout=30.0)
-                logger.info("✓ Token received successfully!")
-                return token
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    "API called but no token received - check credentials"
-                )
+            logger.info("  Waiting for API response...")
+            token = await asyncio.wait_for(token_future, timeout=30.0)
 
-        except asyncio.TimeoutError as e:
-            raise RuntimeError(f"Login timed out: {e}")
+            logger.success("  ✓ Token received!")
+            return token
+
+        except AuthError as e:
+            raise e
+        except Exception as e:
+            raise RuntimeError(f"Login process failed: {e}")
         finally:
-            logger.info("Closing browser...")
             await context.close()
             await browser.close()
 
 
+async def _login_with_retry(email: str, password: str, headless: bool) -> str:
+    """Retries the login process on failure."""
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            if attempt > 1:
+                logger.info(f"--- Retry Attempt {attempt}/{MAX_RETRIES} ---")
+            return await _login_attempt(email, password, headless)
+
+        except AuthError as e:
+            logger.error(f"Stopper Error: {e}")
+            raise e  # Don't retry wrong passwords or 403s
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Attempt {attempt} failed: {e}")
+            if attempt < MAX_RETRIES:
+                await asyncio.sleep(BASE_DELAY * attempt)
+
+    raise LoginRetryError(
+        f"Failed after {MAX_RETRIES} attempts. Last error: {last_error}"
+    )
+
+
 def get_token(headless: bool = True) -> str:
-    """
-    Log in to F1 TV and retrieve subscription token.
-
-    Credentials are read from environment variables:
-    - F1_EMAIL: F1 TV account email
-    - F1_PASSWORD: F1 TV account password
-
-    Args:
-        headless: Run browser in headless mode (default: True)
-
-    Returns:
-        JWT subscription token string
-    """
     email = os.getenv("F1_EMAIL")
     password = os.getenv("F1_PASSWORD")
 
-    if not email:
-        raise ValueError("F1_EMAIL environment variable not set")
-    if not password:
-        raise ValueError("F1_PASSWORD environment variable not set")
+    if not email or not password:
+        raise ValueError("F1_EMAIL and F1_PASSWORD environment variables required")
 
-    return asyncio.run(_login(email, password, headless))
+    return asyncio.run(_login_with_retry(email, password, headless))
 
 
 if __name__ == "__main__":
-    # CLI usage, for debugging
     import sys
 
     try:
-        token = get_token(headless=False)
-        print("\nToken:")
-        print(token)
-        sys.exit(0)
+        # Run visible for debugging
+        print(get_token(headless=True))
     except Exception as e:
-        logger.info(f"\n✗ Error: {e}", file=sys.stderr)
+        logger.error(e)
         sys.exit(1)
