@@ -42,6 +42,9 @@ class SignalRCoreClient:
     _connection_url = "wss://livetiming.formula1.com/signalrcore"
     _negotiate_url = "https://livetiming.formula1.com/signalrcore/negotiate"
 
+    # _connection_url = "http://localhost:8080/signalrcore"
+    # _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
+
     def __init__(
         self,
         filename: str,
@@ -129,9 +132,16 @@ class SignalRCoreClient:
             HubConnectionBuilder()
             .with_url(self._connection_url, options=options)
             .configure_logging(logging.INFO)
+            .with_automatic_reconnect(
+                {
+                    "type": "raw",
+                    "keep_alive_interval": 10,
+                    "reconnect_interval": 5,
+                    "max_attempts": 1000,
+                }
+            )
             .build()
         )
-        # TODO: enable auto reconnect?
 
         self._connection.on_open(self._on_connect)
         self._connection.on_close(self._on_close)
