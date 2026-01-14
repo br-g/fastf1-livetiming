@@ -44,10 +44,22 @@ class WebSocketParameters:
             }
         )
         url = self._format_url(self.raw_url, "negotiate", query)
-        self.headers = dict(self.session.headers)
+
+        # The negotiate endpoint doesn't accept Authorization header
+        # Temporarily remove it for the negotiate request
+        auth_header = self.session.headers.pop("Authorization", None)
 
         request = self.session.get(url)
+
+        # Build headers for WebSocket connection
+        self.headers = dict(self.session.headers)
         self.headers["Cookie"] = self._get_cookie_str(request.cookies)
+
+        # Add back Authorization header for WebSocket connection
+        if auth_header:
+            self.headers["Authorization"] = auth_header
+            self.session.headers["Authorization"] = auth_header
+
         self.socket_conf = request.json()
 
     @staticmethod

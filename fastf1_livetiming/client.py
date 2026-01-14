@@ -8,7 +8,6 @@ from typing import Iterable, List
 import requests
 
 from fastf1_livetiming.connection import Connection
-from fastf1_livetiming.f1_token import get_token
 
 
 def messages_from_raw(r: Iterable):
@@ -77,9 +76,16 @@ class SignalRClient:
         if auth:
             self.logger.info("Authentication enabled. Retrieving token...")
             try:
+                from fastf1_livetiming.f1_token import get_token
                 token = get_token()
                 self.headers["Authorization"] = f"Bearer {token}"
                 self.logger.info("Token retrieved successfully.")
+            except ImportError:
+                self.logger.error("Authentication requires 'playwright' and 'loguru' packages.")
+                self.logger.error(
+                    "Install with: pip install playwright loguru && playwright install chromium"
+                )
+                self.logger.warning("Continuing without authentication...")
             except ValueError as e:
                 self.logger.error(f"Authentication failed: {e}")
                 self.logger.error("Please ensure F1_EMAIL and F1_PASSWORD environment variables are set correctly.")

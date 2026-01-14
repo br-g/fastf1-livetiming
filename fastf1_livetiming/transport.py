@@ -23,6 +23,7 @@ import asyncio
 import logging
 
 import websockets
+from websockets import ConnectionClosed
 
 try:
     import uvloop
@@ -70,7 +71,7 @@ class Transport:
                     await self._master_handler(self.ws, loop)
 
             except (
-                websockets.exceptions.ConnectionClosed,
+                ConnectionClosed,
                 ConnectionRefusedError,
                 asyncio.TimeoutError,
             ) as e:
@@ -118,7 +119,7 @@ class Transport:
                 if len(message) > 0:
                     data = loads(message)
                     await self._connection.received.fire(**data)
-        except websockets.exceptions.ConnectionClosed:
+        except ConnectionClosed:
             self.logger.info("Consumer: Connection closed by server.")
         finally:
             return
@@ -134,7 +135,7 @@ class Transport:
                     elif isinstance(event, CloseEvent) or self._should_close:
                         break
                 self.invoke_queue.task_done()
-        except websockets.exceptions.ConnectionClosed:
+        except ConnectionClosed:
             self.logger.info("Producer: Connection was closed.")
         finally:
             return
