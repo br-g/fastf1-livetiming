@@ -1,17 +1,13 @@
 import asyncio
 import json
 import logging
-import random
 import time
 import uuid
-from typing import List
 
-from fastapi import HTTPException  # Add this import
-from fastapi import FastAPI, Request, Response, WebSocket
+from fastapi import FastAPI, HTTPException, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
 
-# Configuration
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - SERVER - %(levelname)s - %(message)s"
 )
@@ -19,7 +15,6 @@ logger = logging.getLogger("MockServer")
 
 app = FastAPI()
 
-# Allow CORS to mimic the real F1 server behavior
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -28,9 +23,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- SignalR Protocol Constants ---
 RECORD_SEPARATOR = "\x1e"
-PING_INTERVAL = 2  # Seconds
+PING_INTERVAL = 2
 
 
 # --- Chaos Engineering State ---
@@ -46,13 +40,9 @@ chaos = ChaosState()
 message_count = 0
 
 
-# --- Helper: SignalR Message Formatter ---
 def format_json_message(msg: dict) -> str:
     """Formats a dict into a SignalR protocol string (JSON + 0x1e)."""
     return json.dumps(msg) + RECORD_SEPARATOR
-
-
-# --- Routes ---
 
 
 @app.options("/signalrcore/negotiate")
@@ -117,36 +107,27 @@ async def signalr_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
 
-    # 1. Handshake Phase
-    # Client sends: {"protocol": "json", "version": 1} + 0x1e
     try:
         raw_handshake = await websocket.receive_text()
         handshake_data = json.loads(raw_handshake.split(RECORD_SEPARATOR)[0])
         logger.info(f"Client Handshake: {handshake_data}")
-
-        # Server responds with empty JSON + 0x1e to acknowledge
         await websocket.send_text(format_json_message({}))
     except Exception as e:
         logger.error(f"Handshake failed: {e}")
         await websocket.close()
         return
 
-    # 2. Main Loop
     last_ping = time.time()
 
     try:
         while True:
-            # --- Chaos Check: Force Disconnect ---
             if chaos.should_drop_connection:
                 logger.warning("CHAOS: Forcibly closing socket to simulate drop.")
                 chaos.should_drop_connection = False  # Reset flag
                 await websocket.close(code=1006)  # Abnormal closure
                 break
 
-            # --- Check for incoming messages (Non-blocking) ---
-            # We use a very short timeout to allow the loop to continue sending data
             try:
-                # Wait 0.1s for incoming messages (like "Subscribe")
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                 messages = data.split(RECORD_SEPARATOR)
                 for raw_msg in messages:
@@ -154,29 +135,21 @@ async def signalr_endpoint(websocket: WebSocket):
                         continue
                     msg = json.loads(raw_msg)
 
-                    # Handle Invocation (Client calling server methods)
                     if msg.get("type") == 1:
                         target = msg.get("target")
                         logger.info(
                             f"Client invoked: {target} with args: {msg.get('arguments')}"
                         )
-
-                        # Use this to verify your client sent the 'Subscribe' call correctly
             except asyncio.TimeoutError:
-                pass  # No incoming data, carry on to sending
+                pass
 
             # --- Send Ping (KeepAlive) ---
             if time.time() - last_ping > PING_INTERVAL:
-                # Type 6 is Ping in SignalR protocol
                 await websocket.send_text(format_json_message({"type": 6}))
                 last_ping = time.time()
 
             # --- Send Mock F1 Data ---
             if not chaos.should_stop_sending_data:
-                # Simulate the "feed" event
-                # This matches the signature expected by: self._connection.on("feed", self._on_message)
-
-                # Mock Data Payload
                 global message_count
                 mock_data = {
                     "TimingData": {
@@ -186,12 +159,11 @@ async def signalr_endpoint(websocket: WebSocket):
                 }
                 message_count += 1
 
-                # Type 1 = Invocation (Server calling Client method 'feed')
                 feed_msg = {"type": 1, "target": "feed", "arguments": [mock_data]}
 
                 await websocket.send_text(format_json_message(feed_msg))
 
-            await asyncio.sleep(1)  # Send data every 1 second
+            await asyncio.sleep(1)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected")
@@ -202,5 +174,4 @@ async def signalr_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
 
-    # Run on port 8080 to match your client config
     uvicorn.run(app, host="0.0.0.0", port=8080)
