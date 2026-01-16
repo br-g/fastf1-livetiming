@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import threading
 import time
 from typing import List, Optional
@@ -8,18 +9,16 @@ import requests
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 from signalrcore.messages.completion_message import CompletionMessage
 
-from fastf1_livetiming.signalrcore.f1_token import get_token
-
 # Only suppress the noisy INFO/DEBUG logs, keep ERRORs so we know if it crashes
 logging.getLogger("websocket").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 class SignalRCoreClient:
-    # _connection_url = "wss://livetiming.formula1.com/signalrcore"
-    # _negotiate_url = "https://livetiming.formula1.com/signalrcore/negotiate"
-    _connection_url = "http://localhost:8080/signalrcore"
-    _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
+    _connection_url = "wss://livetiming.formula1.com/signalrcore"
+    _negotiate_url = "https://livetiming.formula1.com/signalrcore/negotiate"
+    # _connection_url = "http://localhost:8080/signalrcore"
+    # _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
 
     def __init__(
         self,
@@ -184,8 +183,12 @@ class SignalRCoreClient:
         self._output_file = open(self.filename, self.filemode)
 
         if not self._no_auth:
-            self.logger.info("Fetching authentication token...")
-            self._token = get_token()
+            self._token = os.environ.get("F1_TOKEN")
+            if not self._token:
+                raise ValueError(
+                    "F1_TOKEN environment variable must be set when using --auth flag"
+                )
+            self.logger.info("Using F1_TOKEN for authentication...")
 
         try:
             self._configure_connection()
