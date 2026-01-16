@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import List
 
+from fastapi import HTTPException  # Add this import
 from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.websockets import WebSocketDisconnect
@@ -38,6 +39,7 @@ class ChaosState:
     should_drop_connection = False
     should_stop_sending_data = False
     simulate_server_restart = False
+    negotiation_failure = False
 
 
 chaos = ChaosState()
@@ -66,14 +68,18 @@ async def negotiate_options(response: Response):
 
 @app.post("/signalrcore/negotiate")
 async def negotiate_post():
-    """
-    Standard SignalR negotiation. Returns connection ID and transport capabilities.
-    """
+    """Standard SignalR negotiation."""
+
+    # --- CHAOS: Simulate Server Overload ---
+    if chaos.negotiation_failure:
+        logger.warning("CHAOS: Simulating 503 Service Unavailable")
+        raise HTTPException(status_code=503, detail="Service Unavailable")
+
     logger.info("Handled POST negotiation")
     return {
         "connectionId": str(uuid.uuid4()),
         "availableTransports": [
-            {"transport": "WebSockets", "transferFormats": ["Text", "Binary"]},
+            {"transport": "WebSockets", "transferFormats": ["Text", "Binary"]}
         ],
     }
 
@@ -93,6 +99,15 @@ async def chaos_freeze():
     state = "frozen" if chaos.should_stop_sending_data else "active"
     logger.warning(f"CHAOS: Data stream {state}")
     return {"status": f"Data stream {state}"}
+
+
+@app.get("/chaos/503")
+async def chaos_503():
+    """Toggle 503 errors on negotiation"""
+    chaos.negotiation_failure = not chaos.negotiation_failure
+    state = "on" if chaos.negotiation_failure else "off"
+    logger.warning(f"CHAOS: Negotiation failure {state}")
+    return {"status": f"503 errors {state}"}
 
 
 @app.websocket("/signalrcore")

@@ -39,6 +39,7 @@ class SignalRCoreClient:
         self.filename = filename
         self.filemode = filemode
         self.timeout = timeout
+        self._has_received_message = False
         self._no_auth = no_auth
 
         # State flags
@@ -62,6 +63,7 @@ class SignalRCoreClient:
 
     def _on_message(self, msg: list | CompletionMessage):
         self._t_last_message = time.time()
+        self._has_received_message = True
 
         # Skip logic: Ignore data for 5s after (re)connect
         if time.time() - self._connection_start_time < 5:
@@ -87,6 +89,11 @@ class SignalRCoreClient:
         self._is_connected = True
         self._reconnecting = False
         self._connection_start_time = time.time()
+
+        # RESET State on new connection
+        self._has_received_message = False
+        self._t_last_message = time.time()  # Initialize to now
+
         self.logger.info("Connection established")
         self._send_subscribe()
 
@@ -118,14 +125,26 @@ class SignalRCoreClient:
                 self.logger.error(f"Reconnection failed: Server not reachable.")
 
     def _send_subscribe(self):
-        try:
-            time.sleep(0.5)
-            self._connection.send(
-                "Subscribe", [self.topics], on_invocation=self._on_message
-            )
-            self.logger.info(f"Subscribed to topics: {self.topics}")
-        except Exception as e:
-            self.logger.error(f"Failed to subscribe: {e}")
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                time.sleep(0.5)
+                self._connection.send(
+                    "Subscribe", [self.topics], on_invocation=self._on_message
+                )
+                self.logger.info(f"Subscribed to topics: {self.topics}")
+                return
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    self.logger.error(
+                        f"Failed to subscribe after {max_attempts} attempts"
+                    )
+                    self._connection.stop()  # Trigger reconnect
+                else:
+                    self.logger.warning(
+                        f"Subscribe attempt {attempt + 1} failed, retrying..."
+                    )
+                    time.sleep(1)
 
     def _configure_connection(self):
         try:
@@ -190,13 +209,39 @@ class SignalRCoreClient:
             if self._manually_closed:
                 return
 
-            if self.timeout != 0 and self._is_connected:
-                if time.time() - self._t_last_message > self.timeout:
-                    self.logger.warning(
-                        f"Timeout - received no data for {self.timeout}s!"
-                    )
-                    self._exit()
-                    return
+            # We only check timeouts if we think we are connected
+            if self._is_connected:
+                now = time.time()
+
+                # --- CASE 1: Initial Silence (Hard Stop) ---
+                # If we haven't received ANY data since (re)connecting, rely on self.timeout
+                if not self._has_received_message:
+                    if self.timeout != 0 and (
+                        now - self._connection_start_time > self.timeout
+                    ):
+                        self.logger.error(
+                            f"Startup Timeout: No data received within {self.timeout}s of connection. Stopping."
+                        )
+                        self._exit()
+                        return
+
+                # --- CASE 2: Stream Stalled (Restart) ---
+                # We HAVE received data before, but it went silent for 10 seconds.
+                else:
+                    if now - self._t_last_message > 15:
+                        self.logger.warning(
+                            "Stream Stalled: No data for 15s. Restarting connection..."
+                        )
+
+                        # Force the connection to close.
+                        # This triggers your existing _on_close handler, which starts the _reconnect_loop.
+                        try:
+                            self._connection.stop()
+                        except Exception:
+                            pass
+
+                        # Wait briefly to ensure the state updates before the loop runs again
+                        time.sleep(1)
 
             time.sleep(1)
 
