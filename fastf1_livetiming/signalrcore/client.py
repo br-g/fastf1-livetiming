@@ -9,7 +9,6 @@ import requests
 from signalrcore.hub_connection_builder import HubConnectionBuilder
 from signalrcore.messages.completion_message import CompletionMessage
 
-# Only suppress the noisy INFO/DEBUG logs, keep ERRORs so we know if it crashes
 logging.getLogger("websocket").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
 
@@ -41,7 +40,6 @@ class SignalRCoreClient:
         self._has_received_message = False
         self._no_auth = no_auth
 
-        # State flags
         self._connection = None
         self._is_connected = False
         self._manually_closed = False
@@ -88,10 +86,8 @@ class SignalRCoreClient:
         self._is_connected = True
         self._reconnecting = False
         self._connection_start_time = time.time()
-
-        # RESET State on new connection
         self._has_received_message = False
-        self._t_last_message = time.time()  # Initialize to now
+        self._t_last_message = time.time()
 
         self.logger.info("Connection established")
         self._send_subscribe()
@@ -119,7 +115,6 @@ class SignalRCoreClient:
                 self._connection.start()
                 return
             except Exception as e:
-                # Debug level prevents log spamming, change to error if you want to see every fail
                 self.logger.debug(f"Detailed error: {e}")
                 self.logger.error(f"Reconnection failed: Server not reachable.")
 
@@ -160,7 +155,6 @@ class SignalRCoreClient:
             "headers": self.headers,
         }
 
-        # 1. Build the connection
         self._connection = (
             HubConnectionBuilder()
             .with_url(self._connection_url, options=options)
@@ -168,12 +162,10 @@ class SignalRCoreClient:
             .build()
         )
 
-        # 2. Manually set keep alive if the library supports the attribute
-        # This helps the underlying transport know when to timeout
         try:
             self._connection.keep_alive_interval = 10
         except AttributeError:
-            pass  # Use default if attribute doesn't exist
+            pass
 
         self._connection.on_open(self._on_connect)
         self._connection.on_close(self._on_close)
@@ -212,7 +204,6 @@ class SignalRCoreClient:
             if self._manually_closed:
                 return
 
-            # We only check timeouts if we think we are connected
             if self._is_connected:
                 now = time.time()
 
@@ -229,7 +220,7 @@ class SignalRCoreClient:
                         return
 
                 # --- CASE 2: Stream Stalled (Restart) ---
-                # We HAVE received data before, but it went silent for 10 seconds.
+                # We HAVE received data before, but it went silent for 15 seconds.
                 else:
                     if now - self._t_last_message > 15:
                         self.logger.warning(
@@ -237,13 +228,11 @@ class SignalRCoreClient:
                         )
 
                         # Force the connection to close.
-                        # This triggers your existing _on_close handler, which starts the _reconnect_loop.
                         try:
                             self._connection.stop()
                         except Exception:
                             pass
 
-                        # Wait briefly to ensure the state updates before the loop runs again
                         time.sleep(1)
 
             time.sleep(1)
