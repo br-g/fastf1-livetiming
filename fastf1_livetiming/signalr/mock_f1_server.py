@@ -1,128 +1,165 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
-
 import asyncio
 import json
 import logging
 import time
 import uuid
-from argparse import ArgumentParser
+from typing import Set
 
-from aiohttp import web
+import uvicorn
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
+# --- Configuration ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s: %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - [%(levelname)s] - %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("MockF1Server")
-ARGS = None
+logger = logging.getLogger("F1MockServer")
+
+app = FastAPI()
+
+# CORS pour autoriser tout le monde
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-async def websocket_logic(ws: web.WebSocketResponse, request: web.Request):
+# --- Constantes & État ---
+class ChaosManager:
+    def __init__(self):
+        self.should_kill_connections = False
+        self.is_frozen = False
+
+
+chaos = ChaosManager()
+
+# --- Endpoints Chaos ---
+
+
+@app.get("/chaos/kill")
+async def chaos_kill():
+    """Coupe brutalement toutes les connexions."""
+    chaos.should_kill_connections = True
+    logger.warning(">>> CHAOS: KILL ACTIVÉ")
+    return {"status": "Kill signal sent"}
+
+
+@app.get("/chaos/freeze")
+async def chaos_freeze():
+    """Gèle l'envoi de données (simulation lag)."""
+    chaos.is_frozen = not chaos.is_frozen
+    status = "FROZEN" if chaos.is_frozen else "ACTIVE"
+    logger.warning(f">>> CHAOS: FLUX {status}")
+    return {"status": f"Stream is {status}"}
+
+
+# --- SignalR Legacy Endpoints ---
+
+
+@app.get("/signalr/negotiate")
+async def negotiate(request: Request):
     """
-    Handles the logic for an individual WebSocket client, including
-    simulating various failure modes.
+    Endpoint de négociation compatible avec l'ancien client F1.
+    Répond à GET /signalr/negotiate
     """
+    logger.info("Négociation reçue (Legacy).")
+    # Le format exact attendu par les vieux clients SignalR
+    data = {
+        "Url": "/signalr",
+        "ConnectionToken": str(uuid.uuid4()),
+        "ConnectionId": str(uuid.uuid4()),
+        "KeepAliveTimeout": 20.0,
+        "DisconnectTimeout": 30.0,
+        "ConnectionTimeout": 110.0,
+        "TryWebSockets": True,
+        "ProtocolVersion": "1.5",
+        "TransportConnectTimeout": 5.0,
+        "LogToConsole": True,
+    }
+    return JSONResponse(content=data)
+
+
+@app.websocket("/signalr/connect")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Endpoint WebSocket compatible avec l'URL /signalr/connect
+    """
+    await websocket.accept()
     client_id = str(uuid.uuid4())[:8]
-    logger.info(f"Client {client_id} connected from {request.remote}")
+    logger.info(f"Client {client_id} connecté via WebSocket.")
 
     try:
-        # 1. Wait for the "Subscribe" message from the client
-        subscribe_message = await ws.receive_str(timeout=10)
-        msg = json.loads(subscribe_message)
-        if msg.get("M") == "Subscribe":
-            topics = msg.get("A", [])
-            logger.info(f"Client {client_id} subscribed to topics: {topics}")
-        else:
-            logger.warning(f"Client {client_id} sent unexpected first message: {msg}")
+        # 1. Attente du message "Subscribe" (Logique du script original)
+        # Le client F1 envoie généralement un premier message pour s'abonner
+        try:
+            subscribe_raw = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            subscribe_msg = json.loads(subscribe_raw)
+
+            if subscribe_msg.get("M") == "Subscribe":
+                logger.info(
+                    f"Client {client_id} a envoyé 'Subscribe'. Démarrage du flux."
+                )
+            else:
+                logger.warning(
+                    f"Message inattendu du client {client_id}: {subscribe_msg}"
+                )
+        except asyncio.TimeoutError:
+            logger.warning(f"Client {client_id} n'a pas envoyé Subscribe à temps.")
+            await websocket.close()
             return
 
-        # 2. Start sending mock data based on the chosen mode
-        mode = ARGS.mode
-        logger.info(f"Running in '{mode}' mode for client {client_id}.")
+        # 2. Boucle d'envoi des données
+        msg_count = 1
 
-        if mode == "drop":
-            # Send 5 messages, then close the connection abruptly.
-            for i in range(1, 6):
-                await send_mock_feed(ws, i, client_id)
-                await asyncio.sleep(1)
-            logger.warning(f"[Drop Mode] Closing connection for client {client_id}")
-            await ws.close(code=1011, message=b"Simulating server-side error")
+        while True:
+            # --- CHAOS: KILL ---
+            if chaos.should_kill_connections:
+                logger.warning(f"Kill switch activé pour {client_id}")
+                await websocket.close(code=1011)  # Erreur serveur interne simulée
+                break
 
-        elif mode == "silent":
-            # Send 3 messages, then go silent, forcing a client ping timeout.
-            for i in range(1, 4):
-                await send_mock_feed(ws, i, client_id)
-                await asyncio.sleep(1)
-            logger.warning(
-                f"[Silent Mode] Going silent for {client_id}. Awaiting ping timeout on client-side."
-            )
-            await asyncio.sleep(300)
+            # --- CHAOS: FREEZE ---
+            if not chaos.is_frozen:
+                # Format du message F1 (Legacy)
+                # Structure: {"M": [{"H": "Streaming", "M": "feed", "A": [...]}]}
+                payload_data = (
+                    f"Mock data #{msg_count} for {client_id} at {time.time():.2f}"
+                )
 
-        else:  # 'normal' mode
-            # Send data indefinitely.
-            msg_count = 1
-            while True:
-                await send_mock_feed(ws, msg_count, client_id)
+                message = {"M": [{"H": "Streaming", "M": "feed", "A": [payload_data]}]}
+
+                await websocket.send_text(json.dumps(message))
+                logger.info(f"Envoyé msg #{msg_count} à {client_id}")
                 msg_count += 1
-                await asyncio.sleep(2)
+            else:
+                # Si gelé, on n'envoie rien (même pas de ping applicatif ici,
+                # on laisse le ping TCP/WebSocket gérer le keepalive bas niveau)
+                pass
 
-    except asyncio.TimeoutError:
-        logger.warning(f"Client {client_id} did not send subscribe message in time.")
+            # Gestion des messages entrants (Ping du client, etc.) sans bloquer
+            try:
+                # On écoute brièvement pour voir si le client parle ou ferme
+                req = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                # Si on reçoit quelque chose, on l'ignore ou on log
+            except asyncio.TimeoutError:
+                pass  # Timeout normal, on continue la boucle
+
+    except WebSocketDisconnect:
+        logger.info(f"Client {client_id} déconnecté.")
     except Exception as e:
-        logger.error(f"Error with client {client_id}: {e}", exc_info=True)
+        logger.error(f"Erreur client {client_id}: {e}")
     finally:
-        logger.info(f"Connection closed for client {client_id}")
-
-
-async def send_mock_feed(ws: web.WebSocketResponse, message_number, client_id):
-    """Sends a single mock feed message in the expected format."""
-    mock_payload = {
-        "H": "Streaming",
-        "M": "feed",
-        "A": [
-            f"Mock data #{message_number} for client {client_id} at {time.time():.2f}"
-        ],
-    }
-    wrapper = {"M": [mock_payload]}
-    await ws.send_str(json.dumps(wrapper))
-    logger.info(f"Sent message {message_number} to client {client_id}")
-
-
-async def handle_negotiate(request: web.Request):
-    """Handles the SignalR negotiation HTTP request."""
-    logger.info("Received /negotiate request.")
-    response_data = {
-        "ConnectionToken": str(uuid.uuid4()),
-        "ProtocolVersion": "1.5",
-    }
-    return web.json_response(response_data)
-
-
-async def handle_websocket(request: web.Request):
-    """Upgrades an HTTP GET request to a WebSocket connection."""
-    ws = web.WebSocketResponse()
-    # The prepare() method performs the WebSocket handshake.
-    await ws.prepare(request)
-    # Delegate the rest of the connection lifecycle to our main logic handler.
-    await websocket_logic(ws, request)
-    return ws
+        # Reset automatique du kill switch si c'était le dernier client (optionnel)
+        if chaos.should_kill_connections:
+            chaos.should_kill_connections = False
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Mock F1 Live Timing Server")
-    parser.add_argument(
-        "--mode",
-        choices=["normal", "drop", "silent"],
-        default="normal",
-        help="Simulation mode for testing client resilience.",
-    )
-    ARGS = parser.parse_args()
-
-    app = web.Application()
-    app.router.add_get("/signalr/negotiate", handle_negotiate)
-    app.router.add_get("/signalr/connect", handle_websocket)
-
-    logger.info(f"Starting server in '{ARGS.mode}' mode.")
-    logger.info("Server will be available at http://localhost:8080")
-
-    web.run_app(app, host="localhost", port=8080)
+    print("Serveur F1 Mock (Compatibilité Legacy) démarré sur port 8080")
+    uvicorn.run(app, host="0.0.0.0", port=8080)

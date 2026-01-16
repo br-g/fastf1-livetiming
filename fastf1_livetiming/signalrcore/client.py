@@ -10,12 +10,14 @@ from signalrcore.messages.completion_message import CompletionMessage
 
 from fastf1_livetiming.signalrcore.f1_token import get_token
 
-# Suppress noisy libraries
-logging.getLogger("websocket").setLevel(logging.CRITICAL)
-logging.getLogger("urllib3").setLevel(logging.CRITICAL)
+# Only suppress the noisy INFO/DEBUG logs, keep ERRORs so we know if it crashes
+logging.getLogger("websocket").setLevel(logging.ERROR)
+logging.getLogger("urllib3").setLevel(logging.ERROR)
 
 
 class SignalRCoreClient:
+    # _connection_url = "wss://livetiming.formula1.com/signalrcore"
+    # _negotiate_url = "https://livetiming.formula1.com/signalrcore/negotiate"
     _connection_url = "http://localhost:8080/signalrcore"
     _negotiate_url = "http://localhost:8080/signalrcore/negotiate"
 
@@ -43,8 +45,10 @@ class SignalRCoreClient:
         self._connection = None
         self._is_connected = False
         self._manually_closed = False
-        self._reconnecting = False  # <--- NEW: Prevents duplicate threads
+        self._reconnecting = False
 
+        self._t_last_message = None
+        self._connection_start_time = 0
         self._token = None
 
         if not logger:
@@ -55,10 +59,13 @@ class SignalRCoreClient:
             self.logger = logger
 
         self._output_file = None
-        self._t_last_message = None
 
     def _on_message(self, msg: list | CompletionMessage):
         self._t_last_message = time.time()
+
+        # Skip logic: Ignore data for 5s after (re)connect
+        if time.time() - self._connection_start_time < 5:
+            return
 
         if isinstance(msg, CompletionMessage):
             data = []
@@ -78,7 +85,8 @@ class SignalRCoreClient:
 
     def _on_connect(self):
         self._is_connected = True
-        self._reconnecting = False  # Reset flag on successful connect
+        self._reconnecting = False
+        self._connection_start_time = time.time()
         self.logger.info("Connection established")
         self._send_subscribe()
 
@@ -87,7 +95,6 @@ class SignalRCoreClient:
         self.logger.info("Connection closed")
 
         if not self._manually_closed:
-            # CHECK: If we are already reconnecting, don't spawn another thread
             if self._reconnecting:
                 return
 
@@ -104,9 +111,9 @@ class SignalRCoreClient:
             try:
                 self._configure_connection()
                 self._connection.start()
-                return  # Success (flag reset in _on_connect)
+                return
             except Exception as e:
-                # Use debug to hide stack trace unless needed
+                # Debug level prevents log spamming, change to error if you want to see every fail
                 self.logger.debug(f"Detailed error: {e}")
                 self.logger.error(f"Reconnection failed: Server not reachable.")
 
@@ -135,13 +142,20 @@ class SignalRCoreClient:
             "headers": self.headers,
         }
 
-        # Use logging.CRITICAL to silence library noise
+        # 1. Build the connection
         self._connection = (
             HubConnectionBuilder()
             .with_url(self._connection_url, options=options)
             .configure_logging(logging.CRITICAL)
             .build()
         )
+
+        # 2. Manually set keep alive if the library supports the attribute
+        # This helps the underlying transport know when to timeout
+        try:
+            self._connection.keep_alive_interval = 10
+        except AttributeError:
+            pass  # Use default if attribute doesn't exist
 
         self._connection.on_open(self._on_connect)
         self._connection.on_close(self._on_close)
