@@ -223,10 +223,6 @@ class SignalRCoreClient:
                 # We HAVE received data before, but it went silent for 15 seconds.
                 else:
                     if now - self._t_last_message > 15:
-                        self.logger.warning(
-                            "Stream Stalled: No data for 15s. Restarting connection..."
-                        )
-
                         # Force the connection to close.
                         try:
                             self._connection.stop()
