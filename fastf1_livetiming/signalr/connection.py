@@ -3,9 +3,9 @@
 
 import logging
 
-from fastf1_livetiming.events import EventHook
-from fastf1_livetiming.hub import Hub
-from fastf1_livetiming.transport import Transport
+from fastf1_livetiming.signalr.events import EventHook
+from fastf1_livetiming.signalr.hub import Hub
+from fastf1_livetiming.signalr.transport import Transport
 
 
 class Connection(object):

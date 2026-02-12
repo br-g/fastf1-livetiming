@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fastf1_livetiming"
-version = "0.0.1"
+version = "0.1.0"
 authors = [
-  { name="theOehrly" },
   { name="Bruno Godefroy" },
+  { name="theOehrly" },
+  { name="slazarov" }
 ]
 description = "A slightly modified version of FastF1 livetiming module, for OpenF1"
 readme = "README.md"
