@@ -113,10 +113,16 @@ class SignalRCoreClient:
             try:
                 self._configure_connection()
                 self._connection.start()
-                return
+
+                # Wait briefly to see if _on_connect fires and flips _is_connected.
+                # If it connects, the while loop condition becomes False and the thread ends naturally.
+                # If it drops instantly, _is_connected remains False, and the loop runs again.
+                time.sleep(2)
             except Exception as e:
                 self.logger.debug(f"Detailed error: {e}")
-                self.logger.error(f"Reconnection failed: Server not reachable.")
+                self.logger.error("Reconnection failed: Server not reachable.")
+
+        self._reconnecting = False
 
     def _send_subscribe(self):
         max_attempts = 3

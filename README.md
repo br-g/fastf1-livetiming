@@ -38,5 +38,5 @@ Example:
 
 ```bash
 export F1_TOKEN="your_f1_token_here"
-python -m fastf1_livetiming save ./output.txt PitLaneTimeCollection DriverList TimingData --auth
+python -m fastf1_livetiming save ./output.txt CarData.z PitLaneTimeCollection TimingData --auth
 ```
