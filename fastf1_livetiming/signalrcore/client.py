@@ -86,7 +86,6 @@ class SignalRCoreClient:
         self._is_connected = True
         self._reconnecting = False
         self._connection_start_time = time.time()
-        self._t_last_message = time.time()
 
         self.logger.info("Connection established")
         self._send_subscribe()
@@ -209,32 +208,35 @@ class SignalRCoreClient:
             if self._manually_closed:
                 return
 
+            now = time.time()
+
+            # --- 1. HARD TIMEOUT (Exit completely) ---
+            # If no actual data is received for `self.timeout` seconds, exit.
+            # This handles both initial silence and stalling after receiving data.
+            if self.timeout != 0 and (now - self._t_last_message > self.timeout):
+                self.logger.error(
+                    f"Timeout: No data received for {self.timeout}s. Stopping."
+                )
+                self._exit()
+                return
+
+            # --- 2. STREAM STALLED (Restart connection) ---
             if self._is_connected:
-                now = time.time()
+                time_since_msg = now - self._t_last_message
+                time_since_connect = now - self._connection_start_time
 
-                # --- CASE 1: Initial Silence (Hard Stop) ---
-                # If we haven't received ANY data since (re)connecting, rely on self.timeout
-                if not self._has_received_message:
-                    if self.timeout != 0 and (
-                        now - self._connection_start_time > self.timeout
-                    ):
-                        self.logger.error(
-                            f"Startup Timeout: No data received within {self.timeout}s of connection. Stopping."
-                        )
-                        self._exit()
-                        return
-
-                # --- CASE 2: Stream Stalled (Restart) ---
-                # We HAVE received data before, but it went silent for 15 seconds.
-                else:
-                    if now - self._t_last_message > 15:
-                        # Force the connection to close.
-                        try:
-                            self._connection.stop()
-                        except Exception:
-                            pass
-
-                        time.sleep(1)
+                # If no data in 15s, AND it's been at least 15s since we last connected
+                # (We check time_since_connect to give the new connection 15s to receive data)
+                if time_since_msg > 15 and time_since_connect > 15:
+                    self.logger.warning(
+                        "Stream stalled for 15s. Restarting connection..."
+                    )
+                    try:
+                        self._connection.stop()
+                    except Exception:
+                        pass
+                    # Sleep briefly to avoid hammering the stop command
+                    time.sleep(1)
 
             time.sleep(1)
 
