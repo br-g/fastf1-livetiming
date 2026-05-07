@@ -221,7 +221,7 @@ class SignalRCoreClient:
                 return
 
             # --- 2. STREAM STALLED (Restart connection) ---
-            if self._is_connected:
+            if self._is_connected and self._has_received_message:
                 time_since_msg = now - self._t_last_message
                 time_since_connect = now - self._connection_start_time
 
