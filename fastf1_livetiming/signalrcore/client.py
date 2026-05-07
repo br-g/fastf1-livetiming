@@ -86,7 +86,6 @@ class SignalRCoreClient:
         self._is_connected = True
         self._reconnecting = False
         self._connection_start_time = time.time()
-        self._has_received_message = False
         self._t_last_message = time.time()
 
         self.logger.info("Connection established")
