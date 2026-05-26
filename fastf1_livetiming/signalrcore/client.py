@@ -59,12 +59,12 @@ class SignalRCoreClient:
         self._output_file = None
 
     def _on_message(self, msg: list | CompletionMessage):
-        self._t_last_message = time.time()
-        self._has_received_message = True
-
         # Skip logic: Ignore data for 5s after (re)connect
         if time.time() - self._connection_start_time < 5:
             return
+
+        self._t_last_message = time.time()
+        self._has_received_message = True
 
         if isinstance(msg, CompletionMessage):
             data = []
